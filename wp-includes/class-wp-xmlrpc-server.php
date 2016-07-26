@@ -115,6 +115,7 @@ class wp_xmlrpc_server extends IXR_Server {
 			'wp.getPostTypes'		=> 'this:wp_getPostTypes',
 			'wp.getRevisions'		=> 'this:wp_getRevisions',
 			'wp.restoreRevision'	=> 'this:wp_restoreRevision',
+            'wp.newUser'            => 'this:wp_newUser',
 
 			// Blogger API
 			'blogger.getUsersBlogs' => 'this:blogger_getUsersBlogs',
@@ -6413,4 +6414,120 @@ class wp_xmlrpc_server extends IXR_Server {
 		 */
 		return apply_filters( 'xmlrpc_pingback_error', new IXR_Error( $code, $message ) );
 	}
+
+
+    /**
+     * Create a new user
+     *
+     * @uses wp_insert_user()
+     * @param array $args Method parameters. Contains:
+     *  - int     $blog_id
+     *  - string  $username
+     *  - string  $password
+     *  - array     $content_struct.
+     *      The $content_struct must contain:
+     *      - 'username'
+     *      - 'password'
+     *      - 'email'
+     *      Also, it can optionally contain:
+     *      - 'role'
+     *      - 'first_name'
+     *      - 'last_name'
+     *      - 'website'
+     *  - boolean $send_mail optional. Defaults to false
+     * @return string user_id
+     */
+    function wp_newUser($args)
+    {
+        $this->escape($args);
+
+        $blog_ID = (int)$args[0]; // for future use
+        $username = $args[1];
+        $password = $args[2];
+        $content_struct = $args[3];
+        $send_mail = isset($args[4]) ? $args[4] : false;
+
+        if (!$user = $this->login($username, $password))
+            return $this->error;
+
+        if (!current_user_can('create_users'))
+            return new IXR_Error(401, __('You are not allowed to create users'));
+
+        // this hold all the user data
+        $user_data = array();
+
+        $user_data['user_login'] = '';
+        if (isset ($content_struct['user_login'])) {
+
+            $user_data['user_login'] = sanitize_user($content_struct['user_login']);
+            //Remove any non-printable chars from the login string to see if we have ended up with an empty username
+            $user_data['user_login'] = trim($user_data['user_login']);
+
+        }
+
+        if (empty ($user_data['user_login']))
+            return new IXR_Error(403, __('Cannot create a user with an empty login name. '));
+        if (username_exists($user_data['user_login']))
+            return new IXR_Error(403, __('This username is already registered.'));
+
+        //password cannot be empty
+        if (empty ($content_struct['user_pass']))
+            return new IXR_Error(403, __('password cannot be empty'));
+
+        $user_data['user_pass'] = $content_struct['user_pass'];
+
+        // check whether email address is valid
+        if (!is_email($content_struct['user_email']))
+            return new IXR_Error(403, __('email id is not valid'));
+
+        // check whether it is already registered
+        if (email_exists($content_struct['user_email']))
+            return new IXR_Error(403, __('This email address is already registered'));
+
+        $user_data['user_email'] = $content_struct['user_email'];
+
+        // If no role is specified default role is used
+        $user_data['role'] = get_option('default_role');
+        if (isset ($content_struct['role'])) {
+
+            if (!isset ($wp_roles))
+                $wp_roles = new WP_Roles ();
+            if (!array_key_exists($content_struct['role'], $wp_roles->get_names()))
+                return new IXR_Error(403, __('The role specified is not valid'));
+            $user_data['role'] = $content_struct['role'];
+
+        }
+
+        $user_data['first_name'] = '';
+        if (isset ($content_struct['first_name']))
+            $user_data['first_name'] = $content_struct['first_name'];
+
+        $user_data['last_name'] = '';
+        if (isset ($content_struct['last_name']))
+            $user_data['last_name'] = $content_struct['last_name'];
+
+        $user_data['user_url'] = '';
+        if (isset ($content_struct['user_url']))
+            $user_data['user_url'] = $content_struct['user_url'];
+
+        $user_id = wp_insert_user($user_data);
+
+        if (is_wp_error($user_id))
+            return new IXR_Error(500, $user_id->get_error_message());
+
+        if (!$user_id)
+            return new IXR_Error(500, __('Sorry, your entry could not be posted. Something wrong happened.'));
+
+        if ($send_mail) {
+
+            $subject = "[" . get_bloginfo('name') . "] Your username and password";
+            $message = "Username: " . $user_data['user_login'] . "\nPassword: " . $user_data['user_pass'] . "\n" . get_bloginfo('siteurl') . "/wp-login.php";
+            wp_mail($user_data['user_email'], $subject, $message);
+
+        }
+
+        return strval($user_id);
+
+    }
+
 }
